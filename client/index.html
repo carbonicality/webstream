@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <meta charset="UTF-8">
+        <title>webstream client</title>
+        <style>
+            body {
+                background:#111;
+                color:#ddd;
+                font-family:monospace;
+                margin:0;
+                padding:10px;
+            }
+            #status {
+                padding:6px;
+                margin-bottom:6px;
+            }
+            video {
+                width:100%;
+                max-width:1280px;
+                background:#000;
+                display:block;
+                outline:none;
+            }
+            input,button {
+                font-family:monospace;
+                padding:4px;
+            }
+        </style>
+    </head>
+    <body>
+        <div id="status">disconnected</div>
+        <div>
+            <input id="roomId" placeholder="room id">
+            <input id="secret" placeholder="secret" type="password">
+            <button id="connectBtn">connect</button>
+        </div>
+        <video id="video" autoplay playsinline tabindex="0"></video>
+
+        <script>
+            const SIGURL="wss://signal.classroom.lat";
+            const ICE_SERVERS=[
+                {urls:"https://stun.l.google.com:19302"}
+            ];
+            const statusEl=document.getElementById("status");
+            const videoEl=document.getElementById("video");
+            const connectBtn=document.getElementById("connectBtn");
+            let ws=null;
+            let pc=null;
+            let dataChannel=null;
+
+            function setStatus(text) {
+                statusEl.textContent=text;
+                console.log(text);
+            }
+
+            function connect() {
+                const roomId=document.getElementById("roomId").value.trim();
+                const secret=document.getElementById("secret").value;
+                if (!roomId||!secret) {
+                    setStatus("enter room id and secret");
+                    return;
+                }
+                ws=new WebSocket(SURL);
+                ws.onopen=()=>{
+                    setStatus("connected to signaling server");
+                    ws.send(JSON.stringify({type:"join",role:"client",roomId,secret}));
+                };
+                ws.onmessage=async (event)=>{
+                    const msg=JSON.parse(event.data);
+                    console.log(msg);
+                    switch (msg.type) {
+                        case "joined":
+                            setStatus("joined room, waiting for host");
+                            break;
+                        case "offer":
+                            await handleOffer(msg.sdp);
+                            break;
+                        case "ice":
+                            if (pc&&msg.candidate) {
+                                try {
+                                    await pc.addIceCandidate(msg.candidate);
+                                } catch (err) {
+                                    console.error("failed to add ice creds",err);
+                                }
+                            }
+                            break;
+                        case "host-disconnected":
+                            setStatus("host disconnected");
+                            cleanupPeerConnection();
+                            break;
+                        case "error":
+                            setStatus("error "+msg.message);
+                            break;
+                    }
+                };
+                ws.onclose=()=>{
+                    setStatus("signaling disconnected");
+                };
+                ws.onerror=()=>{
+                    setStatus("signaling error");
+                };
+            }
+            
+            async function handleOffer(sdp) {
+                setStatus("received offer");
+                pc=new RTCPeerConnection({iceServers:ICE_SERVERS});
+                pc.ontrack=(event)=>{
+                    setStatus("receiving video");
+                    videoEl.srcObject=event.streams[0];
+                };
+                pc.onicecandidate=(event)=>{
+                    if (event.candidate) {
+                        ws.send(JSON.stringify({type:"ice",candidate:event.candidate}));
+                    }
+                };
+                pc.onconnectionstatechange=()=>{
+                    setStatus("connection "+pc.connectionState);
+                };
+                pc.ondatachannel=(event)=>{
+                    dataChannel=event.channel;
+                    dataChannel.onopen=()=>console.log("datachannel open");
+                    dataChannel.onclose=()=>console.log("datachannel closed");
+                    setupInputCapture();
+                };
+                await pc.setRemoteDescription({type:"offer",sdp});
+                const answer=await pc.createAnswer();
+                await pc.setLocalDescription(answer);
+                ws.send(JSON.stringify({type:"answer",sdp:answer.sdp}));
+            }
+
+            function cleanupPeerConnection() {
+                if (dataChannel) {dataChannel.close();dataChannel=null;}
+                if (pc) {pc.close();pc=null;}
+                videoEl.srcObject=null;
+            }
+
+            function sendInput(payload) {
+                if (dataChannel&&dataChannel.readyState==="open") {
+                    dataChannel.send(JSON.stringify(payload));
+                }
+            }
+
+            function setupInputCapture() {
+                videoEl.addEventListener("mousemove",(e)=>{
+                    const rect=videoEl.getBoundingClientRect();
+                    const x=(e.clientX-rect.left)/rect.width;
+                    const y=(e.clientY-rect.top)/rect.height;
+                    sendInput({type:"mousemove",x,y});
+                });
+                videoEl.addEventListener("mousedown",(e)=>{
+                    sendInput({type:"mousedown",button:e.button});
+                });
+                videoEl.addEventListener("mouseup",(e)=>{
+                    sendInput({type:"mouseup",button:e.button});
+                });
+                videoEl.addEventListener("wheel",(e)=>{
+                    sendInput({type:"wheel",deltaY:e.deltaY});
+                    e.preventDefault();
+                });
+                videoEl.addEventListener("contextmenu",(e)=>e.preventDefault());
+                window.addEventListener("keydown",(e)=>{
+                    sendInput({type:"keydown",code:e.code});
+                    e.preventDefault();
+                });
+                window.addEventListener("keyup",(e)=>{
+                    sendInput({type:"keyup",code:e.code});
+                    e.preventDefault();
+                });
+                videoEl.addEventListener("click",()=>videoEl.focus());
+                setInterval(()=>{
+                    const pads=navigator.getGamepads();
+                    for (const pad of pads) {
+                        if (!pad) continue;
+                        sendInput({
+                            type:"gamepad",
+                            index:pad.index,
+                            buttons:pad.buttons.map(b=>b.pressed),
+                            axes:pad.axes,
+                        });
+                    }
+                },1000/60);
+            }
+            connectBtn.addEventListener("click",connect);
+        </script>
+    </body>
+</html>
