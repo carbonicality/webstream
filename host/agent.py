@@ -63,4 +63,52 @@ class HostAgent:
         elif msg_type=="error":
             log.error("signaling error %s",msg.get("message"))
     
+    async def _create_offer(self):
+        self.pc=RTCPeerConnection(
+            configuration=RTCConfiguration(iceServers=ICE_SERVERS)
+        )
+        @self.pc.on("connectionstatechange")
+        async def on_state_change():
+            log.info("connection state %s",self.pc.connectionState)
+        self.data_channel=self.pc.createDataChannel("input")
+        @self.data_channel.on("open")
+        def on_open():
+            log.info("data channel open")
+        @self.data_channel.on("message")
+        def on_message(message):
+            self._handle_input(message)
+        
+        offer=await self.pc.createOffer()
+        await self.pc.setLocalDescription(offer)
+        
+        await self.ws.send(json.dumps({
+            "type":"offer",
+            "sdp":self.pc.localDescription.sdp,
+        }))
+        log.info("sent offer to client")
     
+    def _handle_input(self,raw_message):
+        try:
+            event=json.loads(raw_message)
+        except json.JSONDecodeError:
+            return
+        log.debug("input %s",event)
+    
+    async def _cleanup(self):
+        if self.data_channel:
+            self.data_channel.close()
+            self.data_channel=None
+        if self.pc:
+            await self.pc.close()
+            self.pc=None
+    
+def _ice_from_dict(cand:dict)->RTCIceCandidate:
+    from aiortc import candidate_from_sdp
+    candidate=candidate_from_sdp(cand["candidate"].split(":",1)[1])
+    candidate.sdpMid=cand.get("sdpMid")
+    candidate.sdpMLineIndex=cand.get("sdpMLineIndex")
+    return candidate
+
+if __name__=="__main__":
+    agent=HostAgent()
+    asyncio.run(agent.run())
