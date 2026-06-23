@@ -71,6 +71,15 @@ class HostAgent:
         async def on_state_change():
             log.info("connection state %s",self.pc.connectionState)
         self.data_channel=self.pc.createDataChannel("input")
+        from pipeline import ScreenCaptureTrack
+        self._capture=ScreenCaptureTrack(
+            width=int(os.environ.get("CAPTURE_WIDTH",1920)),
+            height=int(os.environ.get("CAPTURE_HEIGHT",1080)),
+            fps=int(os.environ.get("CAPTURE_FPS",60)),
+            display=os.environ.get("DISPLAY",":0",)
+        )
+        self.pc.addTrack(self._capture)
+        self._capture.start()
         @self.data_channel.on("open")
         def on_open():
             log.info("data channel open")
@@ -83,7 +92,7 @@ class HostAgent:
         
         await self.ws.send(json.dumps({
             "type":"offer",
-            "sdp":self.pc.localDescription.sdp,
+            "sdp":self.pc.localDescription.sdp, 
         }))
         log.info("sent offer to client")
     
@@ -92,18 +101,22 @@ class HostAgent:
             event=json.loads(raw_message)
         except json.JSONDecodeError:
             return
-        log.debug("input %s",event)
+        from input import inject_event
+        inject_event(event)
     
     async def _cleanup(self):
         if self.data_channel:
             self.data_channel.close()
             self.data_channel=None
+            if hasattr(self,'_capture') and self._capture:
+                self._capture.stop()
+                self._capture=None
         if self.pc:
             await self.pc.close()
             self.pc=None
     
 def _ice_from_dict(cand:dict)->RTCIceCandidate:
-    from aiortc import candidate_from_sdp
+    from aiortc.sdp import candidate_from_sdp
     candidate=candidate_from_sdp(cand["candidate"].split(":",1)[1])
     candidate.sdpMid=cand.get("sdpMid")
     candidate.sdpMLineIndex=cand.get("sdpMLineIndex")
