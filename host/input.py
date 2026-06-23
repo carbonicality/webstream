@@ -66,3 +66,25 @@ MOUSE_BUTTON_MAP={
     1:ecodes.BTN_MIDDLE,
     2:ecodes.BTN_RIGHT
 }
+
+GAMEPAD_BUTTON_MAP={
+    0:ecodes.BTN_SOUTH,
+    1:ecodes.BTN_EAST,
+    2:ecodes.BTN_WEST,
+    3:ecodes.BTN_NORTH,
+    4:ecodes.BTN_TL,
+    5:ecodes.BTN_TR,
+    6:ecodes.BTN_TL2,
+    7:ecodes.BTN_TR2,
+    8:ecodes.BTN_SELECT,
+    9:ecodes.BTN_START,
+    10:ecodes.BTN_THUMBL,
+    11:ecodes.BTN_THUMBR,
+    12:ecodes.BTN_DPAD_UP,
+    13:ecodes.BTN_DPAD_DOWN,
+    14:ecodes.BTN_DPAD_LEFT,
+    15:ecodes.BTN_DPAD_RIGHT,
+    16:ecodes.BTN_MODE
+}
+ABS_RANGE=32767
+ABS_TRIGGER_MAX=255
