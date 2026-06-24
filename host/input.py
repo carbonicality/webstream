@@ -88,3 +88,195 @@ GAMEPAD_BUTTON_MAP={
 }
 ABS_RANGE=32767
 ABS_TRIGGER_MAX=255
+
+class InputDevices:
+    def __init__(self):
+        self._keyboard:Optional[UInput]=None
+        self._mouse:Optional[UInput]=None
+        self._gamepad:Optional[UInput]=None 
+    
+    def keyboard(self)->UInput:
+        if self._keyboard is None:
+            self._keyboard=UInput(
+                {ecodes.EV_KEY:list(KEY_MAP.values())},
+                name="webstream-keyboard",
+                version=0x1,
+            )
+            log.info("vkeyboard created")
+        return self._keyboard 
+    
+    def mouse(self)->UInput:
+        if self._mouse is None:
+            self._mouse=UInput(
+                {
+                    ecodes.EV_KEY:[ecodes.BTN_LEFT,ecodes.BTN_MIDDLE,ecodes.BTN_RIGHT],
+                    ecodes.EV_REL:[ecodes.REL_X,ecodes.REL_Y,ecodes.REL_WHEEL],
+                },
+                name="webstream-mouse",
+                version=0x1,
+            )
+            log.info("vmouse created")
+        return self._mouse
+    
+    def gamepad(self)->UInput:
+        if self._gamepad is None:
+            abs_capabilities={
+                ecodes.ABS_X:AbsInfo(value=0,min=-ABS_RANGE,max=ABS_RANGE,fuzz=0,flat=128,resolution=0),
+                ecodes.ABS_Y:AbsInfo(value=0,min=-ABS_RANGE,max=ABS_RANGE,fuzz=0,flat=128,resolution=0),
+                ecodes.ABS_RX:AbsInfo(value=0,min=-ABS_RANGE,max=ABS_RANGE,fuzz=0,flat=128,resolution=0),
+                ecodes.ABS_RY:AbsInfo(value=0,min=-ABS_RANGE,max=ABS_RANGE,fuzz=0,flat=128,resolution=0),
+                ecodes.ABS_Z:AbsInfo(value=0,min=0,max=ABS_TRIGGER_MAX,fuzz=0,flat=0,resolution=0),
+                ecodes.ABS_RZ:AbsInfo(value=0,min=0,max=ABS_TRIGGER_MAX,fuzz=0,flat=0,resolution=0),
+                ecodes.ABS_HAT0X:AbsInfo(value=0,min=-1,max=1,fuzz=0,flat=0,resolution=0),
+                ecodes.ABS_HAT0Y:AbsInfo(value=0,min=-1,max=1,fuzz=0,flat=0,resolution=0)
+            }
+            self._gamepad=UInput(
+                {
+                    ecodes.EV_KEY:list(GAMEPAD_BUTTON_MAP.values()),
+                    ecodes.EV_ABS:abs_capabilities,
+                },
+                name="webstream-gamepad",
+                version=0x1,
+            )
+            log.info("vgamepad created")
+        return self._gamepad
+    
+    def close(self):
+        for dev in [self._keyboard,self._mouse,self._gamepad]:
+            if dev:
+                try:
+                    dev.close()
+                except Exception:
+                    pass
+
+_devices=InputDevices()
+
+def _get_screen_size()->tuple[int,int]:
+    #simply returns width,height of the captured display
+    w=os.environ.get("CAPTURE_WIDTH")
+    h=os.environ.get("CAPTURE_HEIGHT")
+    if w and h:
+        return int(w),int(h)
+    try:
+        import subprocess
+        out=subprocess.check_output(["xdpyinfo"],text=True)
+        for line in out.splitlines():
+            if "dimensions:" in line:
+                dims=line.split()[1]
+                sw,sh=dims.split("x")
+                return int(sw),int(sh)
+    except Exception:
+        pass
+    return 1920, 1080
+
+_screen_w,_screen_h=None,None
+
+def _screen()->tuple[int,int]:
+    global _screen_w,_screen_h
+    if _screen_w is None:
+        _screen_w, _screen_h=_get_screen_size()
+        log.info("screen size %dx%d",_screen_w,_screen_h)
+    return _screen_w,_screen_h
+
+_prev_gamepad_buttons:dict[int,list[bool]]={}
+
+def inject_event(event:dict):
+    t=event.get("type")
+    try:
+        if t=="keydown":
+            _inject_key(event.get("code",""),1)
+        elif t=="keyup":
+            _inject_key(event.get("code",""),0)
+        elif t=="mousemove":
+            _inject_mousemove(event.get("x",0.5),event.get("y",0.5))
+        elif t=="mousedown":
+            _inject_mousebutton(event.get("button",0),1)
+        elif t=="mouseup":
+            _inject_mousebutton(event.get("button",0),0)
+        elif t=="wheel":
+            _inject_wheel(event.get("deltaY",0))
+        elif t=="gamepad":
+            _inject_wheel(event.get("deltaY",0))
+        elif t=="gamepad":
+            _inject_gamepad(
+                event.get("index",0),
+                event.get("buttons",[]),
+                event.get("axes",[]),
+            )
+    except Exception as e:
+        log.warning("inject_event error %s: %s",t,e)
+
+def _inject_key(code:str,value:int):
+    keycode=KEY_MAP.get(code)
+    if keycode is None:
+        log.debug("unmapped key code %s",code)
+        return
+    kb=_devices.keyboard()
+    kb.write(ecodes.EV_KEY,keycode,value)
+    kb.syn()
+
+def _inject_mousemove(x:float,y:float):
+    sw,sh=_screen()
+    abs_x=int(x*sw)
+    abs_y=int(y*sh)
+    prev=getattr(_inject_mousemove,"_prev",(sw//2,sh//2))
+    dx=abs_x-prev[0]
+    dy=abs_y-prev[1]
+    _inject_mousemove._prev=(abs_x,abs_y)
+    if dx==0 and dy==0:
+        return 
+    m=_devices.mouse()
+    if dx!==0:
+        m.write(ecodes.EV_REL,ecodes.REL_X,dx)
+    if dy!==0:
+        m.write(ecodes.EV_REL,ecodes.REL_Y,dy)
+    m.syn()
+    
+def _inject_mousebutton(button:int,value:int):
+    btn=MOUSE_BUTTON_MAP.get(button)
+    if btn is None:
+        return
+    m=_devices.mouse()
+    m.write(ecodes.EV_KEY,btn,value)
+    m.syn()
+
+def _inject_wheel(delta_y:float):
+    if abs(delta_y)<1:
+        return
+    direction=-1 if delta_y>0 else 1
+    m=_devices.mouse()
+    m.write(ecodes.EV_REL,ecodes.REL_WHEEL,direction)
+    m.syn()
+
+def _inject_gamepad(index:int,buttons:list,axes:list):
+    gp=_devices.gamepad()
+    prev_buttons=_prev_gamepad_buttons.get(index,[])
+    for i,pressed in enumerate(buttons):
+        btn=GAMEPAD_BUTTON_MAP.get(i)
+        if btn is None:
+            continue
+        prev=prev_buttons[i] if i <len(prev_buttons) else False
+        if pressed!=prev:
+            gp.write(ecodes.EV_KEY,btn,1 if pressed else 0)
+    _prev_gamepad_buttons[index]=list(buttons)
+    axis_map=[
+        (0,ecodes.ABS_X),
+        (1,ecodes.ABS_Y),
+        (2,ecodes.ABS_RX),
+        (3,ecodes.ABS_RY),
+    ]
+    for i,abs_code in axis_map:
+        if i <len(axes):
+            val=int(axes[i]*ABS_RANGE)
+            gp.write(ecodes.EV_ABS,abs_code,val)
+    if 6<len(buttons):
+        lt=int(buttons[6]*ABS_TRIGGER_MAX) if isinstance(buttons[6],float) else (ABS_TRIGGER_MAX if buttons[6] else 0)
+        gp.write(ecodes.EV_ABS,ecodes.ABS_Z,lt)
+    if 7<len(buttons):
+        rt=int(buttons[7]*ABS_TRIGGER_MAX) if ininstance(buttons[7],float) else (ABS_TRIGGER_MAX if buttons[7] else 0)
+        gp.write(ecodes.EV_ABS,ecodes.ABS_RZ,rt)
+    gp.syn()
+
+def close():
+    #cleanly closes uinput
+    _devices.close()
