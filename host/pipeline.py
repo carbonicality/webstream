@@ -158,3 +158,55 @@ class ScreenCaptureTrack(VideoStreamTrack):
         frame.pts=pts
         frame.time_base=time_base
         return frame
+    
+    def _gst_main(self):
+        Gst,GLib=_gst
+        encoder=_detect_encoder()
+        pipeline_str=_build_pipeline_string(self.width,self.height,self.fps_encoder,self.display)
+        log.info("streamer pipeline %s",pipeline_str)
+        self._pipeline=Gst.parse_launch(pipeline_str)
+        sink=self._pipeline.get_by_name("sink")
+        sink.connect("new-sample",self._on_new_sample)
+        self._pipeline.set_state(Gst.State.PLAYING)
+        mainloop=GLib.MainLoop()
+        bus=self._pipeline.get_bus()
+        bus.add_signal_watch()
+        def on_message(bus,message):
+            t=message.type
+            if t==Gst.MessageType.ERROR:
+                err,debug=message.parse.error()
+                log.error("gstreamer error %s %s",err,debug)
+                mainloop.quit()
+            elif t==Gst.MessageType.EOS:
+                mainloop.quit()
+        bus.connect("message",on_message)
+        try:
+            mainloop.run()
+        except Exception as e:
+            log.error("gstreamer mainloop error %s",e)
+        finally:
+            self.pipeline.set_state(Gst.State.NULL)
+    
+    def _on_new_sample(self,sink):
+        Gst,_=_gst
+        sample=sink.emit("pull-sample")
+        if sample is None:
+            return Gst.FlowReturn.ERROR
+        buf=sample.get_buffer()
+        caps=sample.get_caps()
+        structure=caps.get_structure(0)
+        w=structure.get_int("width").value
+        h=structure.get_int("height").value
+        success,map_info=buf.map(Gst.MapFlags.READ)
+        if not success:
+            return Gst.FlowReturn.ERROR
+        try:
+            arr=np.frombuffer(map_info.data,dtype=np.uint8).reshape((h,w,3)).copy()
+        finally:
+            buf.unmap(map_info)
+        if self._loop and self._running:
+            try:
+                asyncio.run_coroutine_threadsafe(self._push_frame(arr),self._loop)
+            except Exception as e:
+                log.warning("failed to push frame %s",e)
+        return Gst.FlowReturn.OK
