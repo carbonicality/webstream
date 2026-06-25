@@ -120,11 +120,8 @@ class ScreenCaptureTrack(VideoStreamTrack):
         buf=sample.get_buffer()
         caps=sample.get_caps()
         structure=caps.get_structure(0)
-        w=structure.get_int("width").value
-        h=structure.get_int("height").value
-        success,map_info=buf.map(Gst.MapFlags.READ)
-        w=structure.get_int("width").value
-        h=structure.get_int("height").value
+        w=structure.get_value("width").value
+        h=structure.get_value("height").value
         success,map_info=buf.map(Gst.MapFlags.READ)
         if not success:
             return Gst.FlowReturn.ERROR
