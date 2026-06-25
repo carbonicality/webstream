@@ -162,7 +162,7 @@ class ScreenCaptureTrack(VideoStreamTrack):
     def _gst_main(self):
         Gst,GLib=_gst
         encoder=_detect_encoder()
-        pipeline_str=_build_pipeline_string(self.width,self.height,self.fps_encoder,self.display)
+        pipeline_str=_build_pipeline_string(self.width,self.height,self.fps,encoder,self.display)
         log.info("streamer pipeline %s",pipeline_str)
         self._pipeline=Gst.parse_launch(pipeline_str)
         sink=self._pipeline.get_by_name("sink")

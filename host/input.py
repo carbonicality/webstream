@@ -226,9 +226,9 @@ def _inject_mousemove(x:float,y:float):
     if dx==0 and dy==0:
         return 
     m=_devices.mouse()
-    if dx!==0:
+    if dx!=0:
         m.write(ecodes.EV_REL,ecodes.REL_X,dx)
-    if dy!==0:
+    if dy!=0:
         m.write(ecodes.EV_REL,ecodes.REL_Y,dy)
     m.syn()
     
