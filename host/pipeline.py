@@ -51,6 +51,58 @@ def _build_pipeline_string(width:int,height:int,fps:int,encoder:str,display:str)
     )
     return pipeline
 
+def _is_wayland()->bool:
+    return os.environ.get("XDG_SESSION_TYPE","").lower()=="wayland"
+
+def _get_pipewire_node_id()->int:
+    import dbus
+    import dbus.mainloop.glib
+    from gi.repository import GLib
+    dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
+    bus=dbus.SessionBus()
+    portal=bus.get_object("org.freedesktop.portal.Desktop","/org/freedesktop/portal/desktop")
+    screencast=dbus.Interface(portal,"org.freedesktop.portal.ScreenCast")
+    loop=GLib.MainLoop()
+    node_id_result=[None]
+    session_path_result=[None]
+    create_opts=dbus.Dictionary({"handle_token":dbus.String("webstream1"),"session_handle_token":dbus.String("webstreamsess1")},signature="sv")
+    request_path=screencast.CreateSession(create_opts)
+    request_obj=bus.get_object("org.freedesktop.portal.Desktop",request_path)
+    request_iface=dbus.Interface(request_obj,"org.freedesktop.portal.Request")
+    def on_create(response,results):
+        if response!=0:
+            loop.quit()
+            return
+        session_path_result[0]=str(results["session_handle"])
+        select_opts=dbus.Dictionary({"handle_token":dbus.String("webstream2"),"types":dbus.UInt32(1),"multiple":dbus.Boolean(False),"cursor_mode":dbus.UInt32(2)},signature="sv")
+        req2_path=screencast.SelectSources(session_path_result[0],select_opts)
+        req2_obj=bus.get_object("org.freedesktop.portal.Desktop",req2_path)
+        req2_iface=dbus.Interface(req2_obj,"org.freedesktop.portal.Request")
+        def on_select(response,results):
+            if response!=0:
+                loop.quit()
+                return
+            start_opts=dbus.Dictionary({"handle_token":dbus.String("webstream3")},signature="sv")
+            req3_path=screencast.Start(session_path_result[0],"",start_opts)
+            req3_obj=bus.get_object("org.freedesktop.portal.Desktop",req3_path)
+            req3_iface=dbus.Interface(req3_ob,"org.freedesktop.portal.Request")
+            def on_start(response,results):
+                if response!=0:
+                    loop.quit()
+                    return
+                streams=results.get("streams",[])
+                if streams:
+                    node_id_result[0]=int(streams[0][0])
+                    log.info("pipewire node id %d",node_id_result[0])
+                loop.quit()
+            req3_iface.connect_to_signal("response",on_start)
+        req2_iface.coonect_to_signal("Response",on_create)
+    request_iface.connect_to_signal("Response",on_create)
+    loop.run()
+    if node_id_result[0] is None:
+        raise RuntimeError("failed to get pipewire rid")
+    return node_id_result[0]
+
 class ScreenCaptureTrack(VideoStreamTrack):
     kind="video"
     def __init__(
@@ -86,55 +138,9 @@ class ScreenCaptureTrack(VideoStreamTrack):
     def stop(self):
         self._running=False
         if self._pipeline:
+            _gst[0].State
             self._pipeline.set_state(_gst[0].State.NULL)
         log.info("capture pipeline stopped")
-        self._pipeline=Gst.parse_launch(pipeline_str)
-        sink=self._pipeline.get_by_name("sink")
-        sink.connect("new-sample",self.on_new_sample)
-        self._pipeline.set_state(Gst.State.PLAYING)
-        mainloop=GLib.MainLoop()
-        bus=self._pipeline.get_bus()
-        bus.add_signal_watch()
-        def on_message(bus,message):
-            t=message.type
-            if t==Gst.MessageType.ERROR:
-                err,debug=message.parse.error()
-                log.error("gstreamer error %s - %s",err,debug)
-                mainloop.quit()
-            elif t==Gst.MessageType.EOS:
-                log.info("gstreamer eos")
-                mainloop.quit()
-        bus.connect("message",on_message)
-        try:
-            mainloop.run()
-        except Exception as e:
-            log.error("gstreamer mainloop error %s",e)
-        finally:
-            self._pipeline.set_state(Gst.State.NULL)
-    
-    def _on_new_sample(self,sink):
-        Gst, _=_gst
-        sample=sink.emit("pull-sample")
-        if sample is None:
-            return Gst.FlowReturn.ERROR
-        buf=sample.get_buffer()
-        caps=sample.get_caps()
-        structure=caps.get_structure(0)
-        w=structure.get_value("width").value
-        h=structure.get_value("height").value
-        success,map_info=buf.map(Gst.MapFlags.READ)
-        if not success:
-            return Gst.FlowReturn.ERROR
-        try:
-            arr=np.frombuffer(map_info.data,dtype=np.uint8).reshape((h,w,3)).copy()
-        finally:
-            buf.unmap(map_info)
-        if self._loop and self._running:
-            try:
-                asyncio.run_coroutine_threadsafe(self._push_frame(arr),self.loop)
-            except Exception as e:
-                log.warning("failed to push frame %s",e)
-        return Gst.FlowReturn.OK
     
     async def _push_frame(self,arr:np.ndarray):
         try:
@@ -143,7 +149,9 @@ class ScreenCaptureTrack(VideoStreamTrack):
             pass
     
     async def recv(self)->av.VideoFrame:
+        log.info("recv called %d",self._queue.qsize())
         arr=await self._queue.get()
+        log.info("got frame %s",arr.shape)
         if self._start_time is None:
             self._start_time=time.time()
         else:
@@ -151,7 +159,7 @@ class ScreenCaptureTrack(VideoStreamTrack):
         pts=self._timestamp
         time_base=VIDEO_TIME_BASE
         frame=av.VideoFrame.from_ndarray(arr,format="rgb24")
-        frame=frame.reformat(format="yuv240p")
+        frame=frame.reformat(format="yuv420p")
         frame.pts=pts
         frame.time_base=time_base
         return frame
@@ -159,10 +167,26 @@ class ScreenCaptureTrack(VideoStreamTrack):
     def _gst_main(self):
         Gst,GLib=_gst
         encoder=_detect_encoder()
-        pipeline_str=_build_pipeline_string(self.width,self.height,self.fps,encoder,self.display)
-        log.info("streamer pipeline %s",pipeline_str)
+        if _is_wayland():
+            log.info("session is wayland, using pipewire")
+            node_id=_get_pipewire_node_id()
+            caps=f"video/x-raw,format=RGB,width={self.width},height={self.height},framerate={self.fps}/1"
+            pipeline_str=(
+                f"pipewiresrc path={node_id} do-timestamp=true ! "
+                f"videoconvert ! videoscale ! videorate ! "
+                f"{caps} ! "
+                f"appsink name=sink emit-signals=true max-buffers=2 drop=true sync=false"
+            )
+        else:
+            log.info("session is x11, using ximagesrc")
+            pipeline_str=_build_pipeline_string(self.width,self.height,self.fps,_detect_encoder(),self.display)
+        log.info("pipeline %s",pipeline_str)
         self._pipeline=Gst.parse_launch(pipeline_str)
         sink=self._pipeline.get_by_name("sink")
+        sink.set_property("emit-signals",True)
+        sink.set_property("sync",False)
+        sink.set_property("max-buffers",2)
+        sink.set_property("drop",True)
         sink.connect("new-sample",self._on_new_sample)
         self._pipeline.set_state(Gst.State.PLAYING)
         mainloop=GLib.MainLoop()
@@ -171,7 +195,7 @@ class ScreenCaptureTrack(VideoStreamTrack):
         def on_message(bus,message):
             t=message.type
             if t==Gst.MessageType.ERROR:
-                err,debug=message.parse.error()
+                err,debug=message.parse_error()
                 log.error("gstreamer error %s %s",err,debug)
                 mainloop.quit()
             elif t==Gst.MessageType.EOS:
@@ -182,7 +206,7 @@ class ScreenCaptureTrack(VideoStreamTrack):
         except Exception as e:
             log.error("gstreamer mainloop error %s",e)
         finally:
-            self.pipeline.set_state(Gst.State.NULL)
+            self._pipeline.set_state(Gst.State.NULL)
     
     def _on_new_sample(self,sink):
         Gst,_=_gst
@@ -192,8 +216,8 @@ class ScreenCaptureTrack(VideoStreamTrack):
         buf=sample.get_buffer()
         caps=sample.get_caps()
         structure=caps.get_structure(0)
-        w=structure.get_int("width").value
-        h=structure.get_int("height").value
+        w=self.width
+        h=self.height
         success,map_info=buf.map(Gst.MapFlags.READ)
         if not success:
             return Gst.FlowReturn.ERROR

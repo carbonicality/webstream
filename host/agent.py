@@ -5,6 +5,8 @@ import os
 import websockets
 from aiortc import RTCPeerConnection, RTCSessionDescription, RTCIceCandidate, RTCConfiguration, RTCIceServer
 from aiortc.contrib.signaling import object_from_string, object_to_string
+from dotenv import load_dotenv
+load_dotenv()
 
 logging.basicConfig(level=logging.INFO)
 log=logging.getLogger("agent")
@@ -89,6 +91,7 @@ class HostAgent:
         
         offer=await self.pc.createOffer()
         await self.pc.setLocalDescription(offer)
+        log.info("sdp:\n%s",self.pc.localDescription.sdp)
         
         await self.ws.send(json.dumps({
             "type":"offer",

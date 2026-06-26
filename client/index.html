@@ -106,8 +106,9 @@
                 setStatus("received offer");
                 pc=new RTCPeerConnection({iceServers:ICE_SERVERS});
                 pc.ontrack=(event)=>{
-                    setStatus("receiving video");
+                    setStatus("receiving video")
                     videoEl.srcObject=event.streams[0];
+                    videoEl.play().catch(e=>console.error("play failed",e));
                 };
                 pc.onicecandidate=(event)=>{
                     if (event.candidate) {
