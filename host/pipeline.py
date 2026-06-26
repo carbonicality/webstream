@@ -7,6 +7,7 @@ from typing import Optional
 import av
 import numpy as np 
 from aiortc.mediastreams import VideoStreamTrack, VIDEO_CLOCK_RATE, VIDEO_TIME_BASE
+import os
 
 log=logging.getLogger("pipeline")
 _gst=None
@@ -85,7 +86,7 @@ def _get_pipewire_node_id()->int:
             start_opts=dbus.Dictionary({"handle_token":dbus.String("webstream3")},signature="sv")
             req3_path=screencast.Start(session_path_result[0],"",start_opts)
             req3_obj=bus.get_object("org.freedesktop.portal.Desktop",req3_path)
-            req3_iface=dbus.Interface(req3_ob,"org.freedesktop.portal.Request")
+            req3_iface=dbus.Interface(req3_obj,"org.freedesktop.portal.Request")
             def on_start(response,results):
                 if response!=0:
                     loop.quit()
@@ -95,8 +96,8 @@ def _get_pipewire_node_id()->int:
                     node_id_result[0]=int(streams[0][0])
                     log.info("pipewire node id %d",node_id_result[0])
                 loop.quit()
-            req3_iface.connect_to_signal("response",on_start)
-        req2_iface.coonect_to_signal("Response",on_create)
+            req3_iface.connect_to_signal("Response",on_start)
+        req2_iface.connect_to_signal("Response",on_select)
     request_iface.connect_to_signal("Response",on_create)
     loop.run()
     if node_id_result[0] is None:
