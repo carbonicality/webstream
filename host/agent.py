@@ -81,6 +81,9 @@ class HostAgent:
             display=os.environ.get("DISPLAY",":0",)
         )
         self.pc.addTrack(self._capture)
+        from aiortc.codecs import H264Encoder
+        from aiortc import RTCRtpSender
+        RTCRtpSender.enableDtx=False
         self._capture.start()
         @self.data_channel.on("open")
         def on_open():

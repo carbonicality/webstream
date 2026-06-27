@@ -104,12 +104,33 @@
             
             async function handleOffer(sdp) {
                 setStatus("received offer");
-                pc=new RTCPeerConnection({iceServers:ICE_SERVERS});
+                pc=new RTCPeerConnection({
+                    iceServers:ICE_SERVERS,
+                    sdpSemantics:"unified-plan"
+                });
+                const transceivers=pc.getTransceivers();
+                for (const t of transceivers) {
+                    if (t.receiver.track?.kind==="video"||t.direction){
+                        const codecs=RTCRtpReceiver.getCapabilities("video").codecs;
+                        const h264=codecs.filter(c=>c.mimeType==="video/H264");
+                        if (h264.length) t.setCodecPreferences(h264);
+                    }
+                }
                 pc.ontrack=(event)=>{
                     setStatus("receiving video")
                     videoEl.srcObject=event.streams[0];
                     videoEl.play().catch(e=>console.error("play failed",e));
                 };
+                if (RTCRtpReceiver.getCapabilities) {
+                    const caps=RTCRtpReceiver.getCapabilities("video")
+                    const h264=caps.codecs.filter(c=>c.mimeType==="video/H264");
+                    const vp9=caps.codecs.filter(c=>c.mimeType==="video/VP9");
+                    pc.getTransceivers().forEach(t=>{
+                        if (t.receiver.track?.kind==="video") {
+                            t.setCodecPreferences([...h264,...vp9]);
+                        }
+                    });
+                }
                 pc.onicecandidate=(event)=>{
                     if (event.candidate) {
                         ws.send(JSON.stringify({type:"ice",candidate:event.candidate}));
@@ -127,6 +148,13 @@
                 await pc.setRemoteDescription({type:"offer",sdp});
                 const answer=await pc.createAnswer();
                 await pc.setLocalDescription(answer);
+                const sender=pc.getSenders().find(s=>s.track?.kind==="video");
+                if (sender) {
+                    const params=sender.getParameters();
+                    if (!params.encodings) params.encodings=[{}];
+                    params.encodings[0].maxBitrate=8_000_000;
+                    sender.setParameters(params).catch(()=>{});
+                }
                 ws.send(JSON.stringify({type:"answer",sdp:answer.sdp}));
             }
 
